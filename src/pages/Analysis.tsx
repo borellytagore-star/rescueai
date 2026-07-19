@@ -1,4 +1,5 @@
 import { useParams, useNavigate, Link } from "react-router-dom";
+import { useEffect, useState } from "react";
 import { ArrowLeft, Phone, MapPin, BookOpen, CheckCircle2 } from "lucide-react";
 import { useEmergencies } from "@/context/EmergencyContext";
 import { AIResponseCard, FirstAidList } from "@/components/AIResponseCard";
@@ -10,9 +11,20 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 export default function Analysis() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { emergencies, analyses, resolveEmergency } = useEmergencies();
+  const { emergencies, analyses, resolveEmergency, loadAnalysis } = useEmergencies();
   const emergency = emergencies.find((e) => e.id === id);
   const analysis = id ? analyses[id] : undefined;
+  const [loadingAnalysis, setLoadingAnalysis] = useState(!analysis);
+
+  useEffect(() => {
+    if (!id || analysis) return;
+    let cancelled = false;
+    setLoadingAnalysis(true);
+    loadAnalysis(id).finally(() => {
+      if (!cancelled) setLoadingAnalysis(false);
+    });
+    return () => { cancelled = true; };
+  }, [id, analysis, loadAnalysis]);
 
   if (!emergency) {
     return (
@@ -24,7 +36,13 @@ export default function Analysis() {
   }
 
   if (!analysis) {
-    return <LoadingScreen label="Loading analysis..." />;
+    return loadingAnalysis ? <LoadingScreen label="Loading analysis..." /> : (
+      <div className="mx-auto max-w-2xl px-4 py-20 text-center space-y-4">
+        <h1 className="text-2xl font-bold">Analysis unavailable</h1>
+        <p className="text-muted-foreground">This report's AI analysis could not be loaded.</p>
+        <Button asChild><Link to="/dashboard">Back to dashboard</Link></Button>
+      </div>
+    );
   }
 
   return (

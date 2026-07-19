@@ -4,80 +4,107 @@ import {
   useEffect,
   useMemo,
   useState,
+  useCallback,
   type ReactNode,
 } from "react";
 import type { AIAnalysis, EmergencyInput } from "@/types";
+import { db } from "@/services/db";
+import { toast } from "sonner";
 
-const STORAGE_KEY = "rescueai.emergencies.v1";
+const CACHE_KEY = "rescueai.emergencies.v1";
 
 interface EmergencyContextValue {
   emergencies: EmergencyInput[];
+  analyses: Record<string, AIAnalysis>;
+  loading: boolean;
   addEmergency: (input: EmergencyInput, analysis?: AIAnalysis) => void;
   resolveEmergency: (id: string) => void;
   removeEmergency: (id: string) => void;
-  analyses: Record<string, AIAnalysis>;
+  loadAnalysis: (id: string) => Promise<AIAnalysis | null>;
 }
 
 const Ctx = createContext<EmergencyContextValue | null>(null);
 
-const seed: EmergencyInput[] = [
-  {
-    id: "s1",
-    description: "Chest pain and shortness of breath during morning run.",
-    type: "cardiac",
-    severity: "critical",
-    createdAt: new Date(Date.now() - 86400000 * 2).toISOString(),
-    status: "resolved",
-    location: { lat: 40.7128, lng: -74.006, label: "Central Park, NY" },
-  },
-  {
-    id: "s2",
-    description: "Child fell from bike, possible wrist fracture.",
-    type: "fracture",
-    severity: "moderate",
-    createdAt: new Date(Date.now() - 86400000 * 5).toISOString(),
-    status: "resolved",
-  },
-  {
-    id: "s3",
-    description: "Severe allergic reaction after bee sting.",
-    type: "allergic",
-    severity: "high",
-    createdAt: new Date(Date.now() - 3600000 * 6).toISOString(),
-    status: "active",
-  },
-];
-
-function load(): EmergencyInput[] {
+function loadCache(): EmergencyInput[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(CACHE_KEY);
     if (raw) return JSON.parse(raw);
   } catch { /* ignore */ }
-  return seed;
+  return [];
 }
 
 export function EmergencyProvider({ children }: { children: ReactNode }) {
-  const [emergencies, setEmergencies] = useState<EmergencyInput[]>(load);
+  const [emergencies, setEmergencies] = useState<EmergencyInput[]>(loadCache);
   const [analyses, setAnalyses] = useState<Record<string, AIAnalysis>>({});
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(emergencies));
+    localStorage.setItem(CACHE_KEY, JSON.stringify(emergencies));
   }, [emergencies]);
 
-  const value = useMemo<EmergencyContextValue>(() => ({
-    emergencies,
-    analyses,
-    addEmergency: (input, analysis) => {
-      setEmergencies((e) => [input, ...e]);
-      if (analysis) setAnalyses((a) => ({ ...a, [input.id]: analysis }));
-    },
-    resolveEmergency: (id) =>
-      setEmergencies((e) =>
-        e.map((x) => (x.id === id ? { ...x, status: "resolved" } : x)),
-      ),
-    removeEmergency: (id) =>
-      setEmergencies((e) => e.filter((x) => x.id !== id)),
-  }), [emergencies, analyses]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await db.listEmergencies();
+        if (!cancelled) {
+          setEmergencies(rows);
+          if (rows.length === 0) setEmergencies([]);
+        }
+      } catch {
+        // keep cache; backend unavailable
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const addEmergency = useCallback((input: EmergencyInput, analysis?: AIAnalysis) => {
+    setEmergencies((e) => [input, ...e.filter((x) => x.id !== input.id)]);
+    if (analysis) setAnalyses((a) => ({ ...a, [input.id]: analysis }));
+    db.saveEmergency(input, analysis).catch(() => {
+      toast.error("Could not save to cloud — kept locally.");
+    });
+  }, []);
+
+  const resolveEmergency = useCallback((id: string) => {
+    setEmergencies((e) =>
+      e.map((x) => (x.id === id ? { ...x, status: "resolved" } : x)),
+    );
+    db.resolveEmergency(id).catch(() => {});
+  }, []);
+
+  const removeEmergency = useCallback((id: string) => {
+    setEmergencies((e) => e.filter((x) => x.id !== id));
+    db.removeEmergency(id).catch(() => {});
+  }, []);
+
+  const loadAnalysis = useCallback(async (id: string) => {
+    if (analyses[id]) return analyses[id];
+    try {
+      const a = await db.getAnalysis(id);
+      if (a) setAnalyses((prev) => ({ ...prev, [id]: a }));
+      return a;
+    } catch {
+      return null;
+    }
+  }, [analyses]);
+
+  const value = useMemo<EmergencyContextValue>(
+    () => ({
+      emergencies,
+      analyses,
+      loading,
+      addEmergency,
+      resolveEmergency,
+      removeEmergency,
+      loadAnalysis,
+    }),
+    [emergencies, analyses, loading, addEmergency, resolveEmergency, removeEmergency, loadAnalysis],
+  );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

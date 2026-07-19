@@ -6,6 +6,7 @@ import { MapCard } from "@/components/MapCard";
 import { HospitalCard } from "@/components/HospitalCard";
 import { LoadingScreen } from "@/components/LoadingScreen";
 import { aiService } from "@/services/ai";
+import { db } from "@/services/db";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -32,10 +33,20 @@ export default function Hospitals() {
   const [filter, setFilter] = useState<(typeof filters)[number]["id"]>("all");
   const [selected, setSelected] = useState<Facility | null>(null);
 
+  const { data: dbFacilities } = useQuery({
+    queryKey: ["db-facilities"],
+    queryFn: () => db.listFacilities(),
+    staleTime: 5 * 60_000,
+  });
+
   const { data: facilities = [], isLoading } = useQuery({
     queryKey: ["facilities", center],
     queryFn: () => aiService.recommendFacilities(center[0], center[1]),
+    enabled: !dbFacilities || dbFacilities.length === 0,
   });
+
+  const allFacilities = dbFacilities && dbFacilities.length > 0 ? dbFacilities : facilities;
+  const loading = isLoading && (!dbFacilities || dbFacilities.length === 0);
 
   const locate = useMutation({
     mutationFn: () =>
@@ -50,8 +61,8 @@ export default function Hospitals() {
   });
 
   const filtered = useMemo(
-    () => (filter === "all" ? facilities : facilities.filter((f) => f.type === filter)),
-    [facilities, filter],
+    () => (filter === "all" ? allFacilities : allFacilities.filter((f) => f.type === filter)),
+    [allFacilities, filter],
   );
 
   return (
@@ -90,7 +101,7 @@ export default function Hospitals() {
 
       <div className="grid gap-6 lg:grid-cols-5">
         <div className="lg:col-span-3 h-[500px] lg:h-[600px] rounded-2xl overflow-hidden border border-border">
-          {isLoading ? (
+          {loading ? (
             <LoadingScreen label="Loading map..." />
           ) : (
             <MapCard
